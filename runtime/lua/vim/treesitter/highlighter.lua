@@ -359,6 +359,10 @@ local function on_range_impl(
 
   local subtree_counter = 0
   self:for_each_highlight_state(function(state)
+    local h_query = state.highlighter_query:query()
+    if on_conceal and not h_query.has_conceal_line then
+      return
+    end
     subtree_counter = subtree_counter + 1
     local root_node = state.tstree:root()
     ---@type { [1]: integer, [2]: integer, [3]: integer, [4]: integer }
@@ -387,16 +391,16 @@ local function on_range_impl(
 
       -- TODO(lewis6991): Creating a new iterator loses the cached predicate results for query
       -- matches. Move this logic inside iter_captures() so we can maintain the cache.
-      state.iter = state.highlighter_query:query():iter_captures(
+      state.iter = h_query:iter_captures(
         root_node,
         self.bufnr,
         range_start_row,
-        root_range[3],
-        { start_col = range_start_col, end_col = root_range[4] }
+        on_conceal and range_end_row or root_range[3],
+        { start_col = range_start_col, end_col = on_conceal and range_end_col or root_range[4] }
       )
     end
 
-    local captures = state.highlighter_query:query().captures
+    local captures = h_query.captures
 
     while cmp_lt(next_row, next_col, range_end_row, range_end_col) do
       local capture, node, metadata, match = state.iter(range_end_row, range_end_col)
@@ -421,54 +425,56 @@ local function on_range_impl(
         if intersection then
           local start_row, start_col, end_row, end_col = Range.unpack4(intersection)
 
-          local hl = state.highlighter_query:get_hl_from_capture(capture)
+          if not on_conceal then
+            local hl = state.highlighter_query:get_hl_from_capture(capture)
 
-          local capture_name = captures[capture]
+            local capture_name = captures[capture]
 
-          local spell, spell_pri_offset = get_spell(capture_name)
+            local spell, spell_pri_offset = get_spell(capture_name)
 
-          local is_noconceal = capture_name == 'noconceal'
-          -- The "conceal" attribute can be set at the pattern level or on a particular capture
-          local conceal_attr = (metadata.conceal ~= nil and metadata.conceal)
-            or (metadata[capture] and metadata[capture].conceal)
-          local conceal ---@type boolean|string?
-          if is_noconceal then
-            conceal = false
-          else
-            conceal = conceal_attr
-            if conceal_attr == false then
-              is_noconceal = true
+            local is_noconceal = capture_name == 'noconceal'
+            -- The "conceal" attribute can be set at the pattern level or on a particular capture
+            local conceal_attr = (metadata.conceal ~= nil and metadata.conceal)
+              or (metadata[capture] and metadata[capture].conceal)
+            local conceal ---@type boolean|string?
+            if is_noconceal then
+              conceal = false
+            else
+              conceal = conceal_attr
+              if conceal_attr == false then
+                is_noconceal = true
+              end
             end
-          end
-          is_noconceal = is_noconceal or conceal_attr == false
-          local conceal_pri_offset = is_noconceal and 1 or 0
+            is_noconceal = is_noconceal or conceal_attr == false
+            local conceal_pri_offset = is_noconceal and 1 or 0
 
-          -- The "priority" attribute can be set at the pattern level or on a particular capture
-          local priority = (
-            vim._tointeger(metadata.priority or metadata[capture] and metadata[capture].priority)
-            or vim.hl.priorities.treesitter
-          )
-            + spell_pri_offset
-            + conceal_pri_offset
+            -- The "priority" attribute can be set at the pattern level or on a particular capture
+            local priority = (
+              vim._tointeger(metadata.priority or metadata[capture] and metadata[capture].priority)
+              or vim.hl.priorities.treesitter
+            )
+              + spell_pri_offset
+              + conceal_pri_offset
 
-          local url = get_url(match, buf, capture, metadata)
+            local url = get_url(match, buf, capture, metadata)
 
-          if hl and not on_conceal and (not on_spell or spell ~= nil) then
-            -- Workaround for #35814: ensure the range is within buffer bounds,
-            -- allowing the last line if end_col is 0.
-            -- TODO(skewb1k): investigate a proper concurrency-safe handling of extmarks.
-            if (end_row + (end_col > 0 and 1 or 0)) <= api.nvim_buf_line_count(buf) then
-              api.nvim_buf_set_extmark(buf, ns, start_row, start_col, {
-                end_row = end_row,
-                end_col = end_col,
-                hl_group = hl,
-                ephemeral = true,
-                priority = priority,
-                conceal = conceal,
-                spell = spell,
-                url = url,
-                _subpriority = subtree_counter,
-              })
+            if hl and (not on_spell or spell ~= nil) then
+              -- Workaround for #35814: ensure the range is within buffer bounds,
+              -- allowing the last line if end_col is 0.
+              -- TODO(skewb1k): investigate a proper concurrency-safe handling of extmarks.
+              if (end_row + (end_col > 0 and 1 or 0)) <= api.nvim_buf_line_count(buf) then
+                api.nvim_buf_set_extmark(buf, ns, start_row, start_col, {
+                  end_row = end_row,
+                  end_col = end_col,
+                  hl_group = hl,
+                  ephemeral = true,
+                  priority = priority,
+                  conceal = conceal,
+                  spell = spell,
+                  url = url,
+                  _subpriority = subtree_counter,
+                })
+              end
             end
           end
 
